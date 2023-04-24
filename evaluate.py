@@ -23,7 +23,7 @@ def get_action(o, agent_sac, deterministic=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('env_name', type=str, default='simple_adversary_v2', help='name of the env',
+    parser.add_argument('--env_name', type=str, default='simple_spread_v2', help='name of the env',
                         choices=['simple_adversary_v2', 'simple_spread_v2', 'simple_tag_v2'])
     parser.add_argument('folder', type=str, help='name of the folder where model is saved')
     parser.add_argument('model', type=str, help='name of the model ')
@@ -51,9 +51,8 @@ if __name__ == '__main__':
         agent_reward = {agent: 0 for agent in env.agents}  # agent reward of the current episode
         frame_list = []  # used to save gif
         while env.agents:  # interact with the env for an episode
-
-            actions = {agent_id: np.reshape(get_action(states,
-                               agents_sac[idx]), (3, 5))[idx] for idx,agent_id in enumerate(all_agents)}
+            actions = {agent_id: get_action(states,
+                               agents_sac[idx]) for idx,agent_id in enumerate(all_agents)}
             # actions = agents_sac.select_action(states)
             next_states, rewards, terminat,truncat, infos = env.step(actions)
             done = terminat or truncat

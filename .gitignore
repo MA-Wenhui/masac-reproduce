@@ -1,1 +1,6 @@
 results
+**/*.pyc
+**/*.gif
+**/*.pt
+**/*.png
+**/*.pkl
