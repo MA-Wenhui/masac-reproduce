@@ -87,8 +87,8 @@ class MLPActorCritic(nn.Module):
 
         # build policy and value functions
         self.pi = SquashedGaussianMLPActor(obs_dim, act_dim, hidden_sizes, activation, act_limit).to(device)
-        self.q1 = MLPQFunction(obs_dim, act_dim*agent_num, hidden_sizes, activation).to(device)
-        self.q2 = MLPQFunction(obs_dim, act_dim*agent_num, hidden_sizes, activation).to(device)
+        self.q1 = MLPQFunction(obs_dim*agent_num, act_dim*agent_num, hidden_sizes, activation).to(device)
+        self.q2 = MLPQFunction(obs_dim*agent_num, act_dim*agent_num, hidden_sizes, activation).to(device)
 
     def act(self, obs, deterministic=False):
         with torch.no_grad():
