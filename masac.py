@@ -12,17 +12,10 @@ import os
 import pickle
 import time
 import argparse
-
+import logging
 import torch.nn.functional as F
 
 import concurrent.futures
-
-from utils.run_utils import setup_logger_kwargs
-logger_kwargs = setup_logger_kwargs("masac", 0)
-
-logger = EpochLogger(**logger_kwargs)
-logger.save_config(locals())
-
 
 num_agent = 3
 max_step_per_epoch = 25
@@ -34,14 +27,28 @@ act_dim = 5
 # start_steps=1024
 
 update_after = 50000
-update_every = 50
-start_steps = 55000
+update_every = 10
+start_steps = 50000
 
 batch_size = 1024
 env_name = "simple_spread_v2"
 
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # device = "cpu"
+
+def setup_logger(filename):
+    """ set up logger with filename. """
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    handler = logging.FileHandler(filename, mode='w')
+    handler.setLevel(logging.INFO)
+
+    formatter = logging.Formatter('%(asctime)s--%(levelname)s--%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    handler.setFormatter(formatter)
+
+    logger.addHandler(handler)
+    return logger
 
 
 def print_with_color(*args, color='white'):
@@ -62,35 +69,31 @@ def print_with_color(*args, color='white'):
 
 
 class SAC:
-    def __init__(self, agent_name, agent_id, obs_dim, agent_n, act_dim, act_limit, hidden_sizes=[64, 64],
+    def __init__(self, agent_name, agent_id, obs_dim,result_dir, agent_n, act_dim, act_limit, replay_size,hidden_sizes=[64, 64],
                  gamma=0.99,
                 #   alpha=0.0,
-                 alpha=0.2,
+                 alpha=0.1,
                  lr=0.0003,
-                 polyak=0.995):
+                 polyak=0.995,
+                 ):
         self.agent_name = agent_name
         self.agent_id = agent_id
         self.agent_n = agent_n
-        self.ac = core.MLPActorCritic(
-            obs_dim, act_dim, act_limit, hidden_sizes=hidden_sizes, agent_num=agent_n)
         self.gamma = gamma
         self.alpha = alpha
         self.lr = lr
         self.polyak = polyak
+
+        self.ac = core.MLPActorCritic(
+            obs_dim, act_dim, act_limit, hidden_sizes=hidden_sizes, agent_num=agent_n)
         self.ac_targ = deepcopy(self.ac)
         for p in self.ac_targ.parameters():
             p.requires_grad = False
         self.q_params = itertools.chain(
             self.ac.q1.parameters(), self.ac.q2.parameters())
-
-        var_counts = tuple(core.count_vars(module)
-                           for module in [self.ac.pi, self.ac.q1, self.ac.q2])
-        logger.log(
-            '\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n' % var_counts)
-
-        self.pi_optimizer = Adam(self.ac.pi.parameters(), lr=lr)
         self.q_optimizer = Adam(self.q_params, lr=lr)
-        replay_size = 1000000
+        self.pi_optimizer = Adam(self.ac.pi.parameters(), lr=lr)
+
         self.replay_buffer = ReplayBuffer(
             obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 
@@ -102,15 +105,20 @@ class SAC:
         pi, logp_pi = self.ac.pi(data_n[self.agent_id]['obs'])
         start_column = self.agent_id*5
         a_n[:, start_column:start_column+5] = pi[:, :]
-
+        
         q1_pi = self.ac.q1(o_n, a_n)
         q2_pi = self.ac.q2(o_n, a_n)
         q_pi = torch.min(q1_pi, q2_pi)
+        logger.info(f'{self.agent_name}: q1_pi: {q1_pi}')
+        logger.info(f'{self.agent_name}: q2_pi: {q2_pi}')
 
         # Entropy-regularized policy loss
         loss_pi = (self.alpha * logp_pi - q_pi).mean()
+        logger.info(f'{self.agent_name}: self.alpha * logp_pi.mean(): {self.alpha * logp_pi.mean()}')
+        logger.info(f'{self.agent_name}: q_pi.mean(): {q_pi.mean()}')
+        logger.info(f'{self.agent_name}: actor loss: {loss_pi.item()}')
         # Useful info for logging
-        pi_info = dict(LogPi=logp_pi.detach().cpu().numpy())
+        pi_info = dict(LogPi=logp_pi)
 
         return loss_pi, pi_info
 
@@ -139,24 +147,21 @@ class SAC:
             q1_pi_targ = self.ac_targ.q1(o2_n, a2_n)
             q2_pi_targ = self.ac_targ.q2(o2_n, a2_n)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
-            backup = r.to(device) + self.gamma * \
-                (1 - d.to(device)) * (q_pi_targ - self.alpha * logp_a2)
+            backup = r + self.gamma * \
+                (1 - d) * (q_pi_targ - self.alpha * logp_a2)
         
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup)**2).mean()
-        # loss_q1 = F.mse_loss(q1,backup)
         # print_with_color("\t\t",self.agent_name,"loss_q1:",loss_q1,color='green')
         loss_q2 = ((q2 - backup)**2).mean()
-        # loss_q2 = F.mse_loss(q1,backup)
-
         # print_with_color("\t\t",self.agent_name,"loss_q2:",loss_q2,color='green')
         loss_q = loss_q1 + loss_q2
-
-        # print_with_color("\t\t",self.agent_name,"loss_q:",loss_q,color='green')
-
+        logger.info(f'{self.agent_name}: loss_q1: {loss_q1.item()}')
+        logger.info(f'{self.agent_name}: loss_q2: {loss_q2.item()}')
+        logger.info(f'{self.agent_name}: loss_q: {loss_q.item()}')
         # Useful info for logging
-        q_info = dict(Q1Vals=q1.detach().cpu().numpy(),
-                      Q2Vals=q2.detach().cpu().numpy())
+        q_info = dict(Q1Vals=q1.detach(),
+                      Q2Vals=q2.detach())
 
         return loss_q, q_info
 
@@ -164,33 +169,42 @@ class SAC:
     def add_replay_buffer(self, obs, act, r, next_obs, done):
         self.replay_buffer.store(obs, act, r, next_obs, done)
 
-def update_agents(all_agents_sac):
+def sample_agents(all_agents_sac):  
     data_n = []
+    # sample all agent's buffer
     for agent_sac in all_agents_sac:
         data_n.append(agent_sac.replay_buffer.sample_batch(batch_size))
 
+    # add all agent's next_act from each agent's current policy
     for agent_sac in all_agents_sac:
         a2_list, logp_a2_list = agent_sac.ac.pi(data_n[agent_sac.agent_id]['obs'])
-        # a2_n = torch.cat(a2_list,dim=1)
         data_n[agent_sac.agent_id]['act2'] = a2_list
-        # logp_a2_n = torch.stack(logp_a2_list, dim=1)
+    return data_n
+        
 
+def update_agents(all_agents_sac):
+    # start update
+    for agent_sac in all_agents_sac:
+        data_n = sample_agents(all_agents_sac)
+        # update critic 
         agent_sac.q_optimizer.zero_grad()
         loss_q, q_info = agent_sac.compute_loss_q(data_n)
         # print("\t\tloss_q",loss_q)
         loss_q.backward()
+        # torch.nn.utils.clip_grad_norm_(agent_sac.q_params, 0.5)
         agent_sac.q_optimizer.step()
         # Freeze Q-networks so you don't waste computational effort
         # computing gradients for them during the policy learning step.
         for p in agent_sac.q_params:
             p.requires_grad = False
 
+        # update actor
         agent_sac.pi_optimizer.zero_grad()
         loss_pi, pi_info = agent_sac.compute_loss_pi(data_n)
         # print("\t\tloss_pi",loss_pi)
         loss_pi.backward()
+        # torch.nn.utils.clip_grad_norm_(agent_sac.ac.pi.parameters(), 0.5)
         agent_sac.pi_optimizer.step()
-
         for p in agent_sac.q_params:
             p.requires_grad = True
 
@@ -200,7 +214,7 @@ def update_agents(all_agents_sac):
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(agent_sac.polyak)
                 p_targ.data.add_((1 - agent_sac.polyak) * p.data)
-        return
+        
 
 class ReplayBuffer:
     def __init__(self, obs_dim, act_dim, size):
@@ -237,27 +251,20 @@ class ReplayBuffer:
 
 
 def get_action(o, agent_sac, deterministic=False):
-    # tensor_dict = {}
-    # for key, value in o.items():
-    #     tensor_dict[key] = torch.tensor(value)
-
-    # # Concatenate the tensors along the last dimension (axis=1)
-    # output_tensor = torch.cat(list(tensor_dict.values()), dim=0)
-
     return agent_sac.ac.act(torch.as_tensor(o, dtype=torch.float32),
                             deterministic)
 
 
-def get_env(env_name, ep_len=25, render_mode='rgb_array'):
+def get_env(e, ep_len=25, render_mode='rgb_array'):
     """create environment and get observation and action dimension of each agent in this environment"""
     new_env = None
-    if env_name == 'simple_adversary_v2':
+    if e == 'simple_adversary_v2':
         new_env = simple_adversary_v2.parallel_env(
             max_cycles=ep_len, continuous_actions=True, render_mode=render_mode)
-    if env_name == 'simple_spread_v2':
+    if e == 'simple_spread_v2':
         new_env = simple_spread_v2.parallel_env(
             max_cycles=ep_len, continuous_actions=True, render_mode=render_mode)
-    if env_name == 'simple_tag_v2':
+    if e == 'simple_tag_v2':
         new_env = simple_tag_v2.parallel_env(
             max_cycles=ep_len, continuous_actions=True, render_mode=render_mode)
 
@@ -268,7 +275,6 @@ def get_env(env_name, ep_len=25, render_mode='rgb_array'):
         _dim_info[agent_id] = []  # [obs_dim, act_dim]
         _dim_info[agent_id].append(
             new_env.observation_space(agent_id).shape[0])
-        print(new_env.action_space(agent_id).shape[0])
         _dim_info[agent_id].append(new_env.action_space(agent_id).shape[0])
 
     return new_env, _dim_info
@@ -292,6 +298,7 @@ if __name__ == '__main__':
                         choices=['human', 'rgb_array'])
     parser.add_argument('--exchange_pos', type=str, default='n', help='exchange agent pos',
                         choices=['y', 'n'])
+    parser.add_argument('--replay_size', type=int, default=1000000, help='max size')
     args = parser.parse_args()
 
     # create folder to save result
@@ -302,12 +309,14 @@ if __name__ == '__main__':
     result_dir = os.path.join(env_dir, f'{total_files + 1}')
     os.makedirs(result_dir)
     
+    logger = setup_logger(os.path.join(result_dir, 'masac.log'))
+
     
     env, dim_info = get_env(env_name, max_step_per_epoch, args.render_mode)
 
     all_agents = env.agents
-    agents_sac = [SAC(agent, agent_id=idx, obs_dim=obs_dim, act_dim=act_dim, agent_n=num_agent,
-                      act_limit=env.action_space(agent).high[0]) for idx, agent in enumerate(env.agents)]
+    agents_sac = [SAC(agent_name=agent, agent_id=idx, obs_dim=obs_dim, act_dim=act_dim, agent_n=num_agent,
+                      act_limit=env.action_space(agent).high[0],result_dir=result_dir,replay_size=args.replay_size) for idx, agent in enumerate(env.agents)]
     step = 0  # global step counter
     agent_num = env.num_agents
     episode_num1 = 30000
@@ -351,8 +360,6 @@ if __name__ == '__main__':
             # print("\t",reward,"\n------")
             # print("\t",done,"\n------")
             for idx, agent_id in enumerate(all_agents):
-                # a2, logp_a2 = agents_sac[idx].ac.pi(
-                #     torch.cat([torch.tensor(next_obs[k]) for k in next_obs], dim=0).unsqueeze(0))
                 agents_sac[idx].add_replay_buffer(
                     obs[agent_id], action[agent_id], reward[agent_id], next_obs[agent_id], done[agent_id])
 
@@ -360,7 +367,6 @@ if __name__ == '__main__':
                 agent_reward[agent_id] += r
 
             if step >= update_after and step % update_every == 0:  # learn every
-                # for j in range(update_every):
                 for j in range(update_every):
                     update_agents(agents_sac)
                 # with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:

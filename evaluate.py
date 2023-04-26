@@ -10,14 +10,7 @@ from masac import SAC,get_env
 
 
 def get_action(o, agent_sac, deterministic=False):
-    tensor_dict = {}
-    for key, value in o.items():
-        tensor_dict[key] = torch.tensor(value)
-
-    # Concatenate the tensors along the last dimension (axis=1)
-    output_tensor = torch.cat(list(tensor_dict.values()), dim=0)
-    # print(agent_sac)
-    return agent_sac.act(torch.as_tensor(output_tensor, dtype=torch.float32),
+    return agent_sac.act(torch.as_tensor(o, dtype=torch.float32),
                             deterministic)
 
 
@@ -51,7 +44,7 @@ if __name__ == '__main__':
         agent_reward = {agent: 0 for agent in env.agents}  # agent reward of the current episode
         frame_list = []  # used to save gif
         while env.agents:  # interact with the env for an episode
-            actions = {agent_id: get_action(states,
+            actions = {agent_id: get_action(states[agent_id],
                                agents_sac[idx]) for idx,agent_id in enumerate(all_agents)}
             # actions = agents_sac.select_action(states)
             next_states, rewards, terminat,truncat, infos = env.step(actions)
